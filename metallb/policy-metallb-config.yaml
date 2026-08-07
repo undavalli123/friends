@@ -1,0 +1,75 @@
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: policy-metallb-config
+  namespace: rhacm-policies
+  annotations:
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/description: >-
+      Creates the MetalLB IPAddressPool and L2Advertisement. The pool range is
+      derived per cluster at evaluation time from the /26 machine network on
+      that cluster's Infrastructure resource, taking host addresses .213-.219.
+spec:
+  remediationAction: enforce
+  disabled: false
+  # Do not lay down the pool until the operator policy is fully Compliant,
+  # i.e. the MetalLB CRDs exist and the controller is running.
+  dependencies:
+    - apiVersion: policy.open-cluster-management.io/v1
+      kind: Policy
+      name: policy-metallb-operator
+      namespace: rhacm-policies
+      compliance: Compliant
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: metallb-address-pool
+        spec:
+          remediationAction: enforce
+          severity: high
+          object-templates:
+            # -------------------------------------------------------------
+            # IPAddressPool
+            #
+            # The address range is templated on the managed cluster:
+            #   1. lookup Infrastructure/cluster
+            #   2. walk .spec.platformSpec.vsphere.machineNetworks and keep
+            #      the entry ending in /26 (the /32 entries are the API and
+            #      ingress VIPs, they must be ignored)
+            #   3. drop the CIDR mask and the host octet
+            #   4. rebuild <a>.<b>.<c>.213-<a>.<b>.<c>.219
+            #
+            # e.g. machineNetworks 10.106.209.192/26
+            #        -> 10.106.209.213-10.106.209.219
+            # -------------------------------------------------------------
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: metallb.io/v1beta1
+                kind: IPAddressPool
+                metadata:
+                  name: metallb-pool
+                  namespace: metallb-system
+                spec:
+                  autoAssign: true
+                  addresses:
+                    - '{{- $c := "" }}{{- range (lookup "config.openshift.io/v1" "Infrastructure" "" "cluster").spec.platformSpec.vsphere.machineNetworks }}{{- if hasSuffix "/26" . }}{{- $c = . }}{{- end }}{{- end }}{{- $ip := (splitn "/" 2 $c)._0 }}{{- $o := split "." $ip }}{{ printf "%s.%s.%s.213-%s.%s.%s.219" $o._0 $o._1 $o._2 $o._0 $o._1 $o._2 }}'
+
+            # -------------------------------------------------------------
+            # L2Advertisement - advertise the pool from every node, letting
+            # MetalLB select the interface itself.
+            # -------------------------------------------------------------
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: metallb.io/v1beta1
+                kind: L2Advertisement
+                metadata:
+                  name: metallb-l2adv
+                  namespace: metallb-system
+                spec:
+                  ipAddressPools:
+                    - metallb-pool

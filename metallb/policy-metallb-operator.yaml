@@ -1,0 +1,110 @@
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: policy-metallb-operator
+  namespace: rhacm-policies
+  annotations:
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/description: >-
+      Installs the Red Hat MetalLB Operator (namespace, OperatorGroup,
+      Subscription) and creates the MetalLB custom resource that starts the
+      controller and speaker pods.
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    # ---------------------------------------------------------------------
+    # 1. Namespace + OperatorGroup + Subscription
+    # ---------------------------------------------------------------------
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: metallb-operator-install
+        spec:
+          remediationAction: enforce
+          severity: high
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: metallb-system
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: operators.coreos.com/v1
+                kind: OperatorGroup
+                metadata:
+                  name: metallb-operator
+                  namespace: metallb-system
+                spec:
+                  targetNamespaces:
+                    - metallb-system
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: operators.coreos.com/v1alpha1
+                kind: Subscription
+                metadata:
+                  name: metallb-operator-sub
+                  namespace: metallb-system
+                spec:
+                  channel: stable
+                  name: metallb-operator
+                  source: redhat-operators
+                  sourceNamespace: openshift-marketplace
+                  installPlanApproval: Automatic
+
+    # ---------------------------------------------------------------------
+    # 2. Wait for the operator CSV to reach Succeeded.
+    #    This one is "inform" on purpose - a status field cannot be enforced,
+    #    it can only be observed. It acts as the gate for step 3.
+    # ---------------------------------------------------------------------
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: metallb-operator-status
+        spec:
+          remediationAction: inform
+          severity: high
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: operators.coreos.com/v1alpha1
+                kind: ClusterServiceVersion
+                metadata:
+                  namespace: metallb-system
+                spec:
+                  displayName: MetalLB Operator
+                status:
+                  phase: Succeeded
+
+    # ---------------------------------------------------------------------
+    # 3. MetalLB custom resource - only once the CSV above is Succeeded,
+    #    otherwise the CRD does not exist yet and the apply fails.
+    # ---------------------------------------------------------------------
+    - extraDependencies:
+        - apiVersion: policy.open-cluster-management.io/v1
+          kind: ConfigurationPolicy
+          name: metallb-operator-status
+          compliance: Compliant
+      objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: metallb-instance
+        spec:
+          remediationAction: enforce
+          severity: high
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: metallb.io/v1beta1
+                kind: MetalLB
+                metadata:
+                  name: metallb
+                  namespace: metallb-system
