@@ -90,6 +90,42 @@ Both policies are `remediationAction: enforce`, so ACM creates and continually
 corrects these objects. Switch to `inform` for a dry run — the policies will
 then report compliance without changing anything.
 
+## Validation performed
+
+These manifests were checked offline before being committed:
+
+- **Template** — the `addresses` template was extracted from this file and
+  executed against the real `Masterminds/sprig/v3` library, with the function
+  map restricted to ACM's strict `exportedSprigFunctions` allowlist (taken from
+  `stolostron/go-template-utils`). It resolves correctly for the sample
+  Infrastructure, for a reordered `machineNetworks` list, and for other third
+  octets; three negative cases (no `/26`, missing `machineNetworks`, empty
+  lookup) all fail loudly instead of emitting a plausible-looking range.
+- **Function availability** — `hasSuffix`, `split` and `splitn` are all in
+  ACM's allowlist. `first` and `initial` are **not**, which is why the template
+  reconstructs the prefix with `printf` from `split` output rather than the more
+  obvious `join "." (initial ...)`. `printf` is a Go template builtin, not a
+  sprig function, so the allowlist does not affect it.
+- **Schemas** — every object validates with `kubeconform -strict` against CRDs
+  pulled from upstream (`governance-policy-propagator`,
+  `config-policy-controller`, `open-cluster-management-io/api`,
+  `operator-framework/api`, `metallb`, `metallb-operator`), at all three
+  nesting levels: the `Policy`/`PolicySet`/`Placement`/`PlacementBinding`
+  resources, the embedded `ConfigurationPolicy` objects, and the managed
+  objects inside them — including the pool with its template resolved.
+- **Field shapes** — `spec.dependencies` and `policy-templates[].extraDependencies`
+  were confirmed against the `Policy` CRD (`apiVersion`, `kind`, `name`,
+  `compliance` required; `namespace` optional).
+
+Two things full-schema validation flags that are correct as written:
+
+- The `ClusterServiceVersion` entry is a deliberately partial object — a
+  `musthave` matcher, never created — so it does not satisfy the full CSV
+  schema. That is how ACM subset matching is meant to be written.
+- `kubeconform` cannot compile the `ConfigurationPolicy` CRD's `status`
+  subtree and reports it as a missing schema. Validating against the same CRD
+  with `status` removed passes; nothing here authors `status`.
+
 ## Notes
 
 - The `lookup` in the template runs as the ACM `config-policy-controller`
@@ -98,9 +134,12 @@ then report compliance without changing anything.
   policy reports a template error mentioning `Infrastructure`, check that the
   addon's RBAC has not been narrowed.
 - If the lookup returns nothing (non-vSphere platform, or no `/26` in
-  `machineNetworks`), the template resolves to an invalid range and the policy
-  goes `NonCompliant` with the error rather than silently creating a bad pool.
+  `machineNetworks`), the template resolves to a malformed range. The
+  `IPAddressPool` CRD places no pattern on `spec.addresses`, so it is MetalLB's
+  validating webhook that rejects it — the apply fails and the policy goes
+  `NonCompliant` rather than silently creating a bad pool.
 - `autoAssign: true` means any `LoadBalancer` Service without a pool
-  annotation draws from these seven addresses.
+  annotation draws from these seven addresses. This is also the CRD default;
+  it is set explicitly here so the behaviour is visible in the policy.
 - The `L2Advertisement` sets no `interfaces` or `nodeSelectors`, so the pool is
   advertised from every node and MetalLB picks the interface itself.
