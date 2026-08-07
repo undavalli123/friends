@@ -1,0 +1,247 @@
+---
+# =============================================================================
+# POLICY 2 of 2 -- collect each cluster's Secrets onto the hub and push them
+#                  to Azure Key Vault.
+#
+# Runs on the HUB only (local-cluster). For every cluster selected by the
+# ldap-export-clusters Placement in policy-ldap-export.yaml it creates, in that
+# cluster's own hub namespace:
+#
+#   ManagedServiceAccount  ldap-export-reader   token for the hub to read with
+#   SecretStore            <cluster>-remote     reads that cluster via cluster-proxy
+#   ExternalSecret x2      pull  ldap-export-config / ldap-export-ca -> hub
+#   PushSecret     x2      push  those values -> Azure Key Vault
+#
+# Managed clusters never talk to Azure. Only the hub does.
+#
+# >>> BEFORE APPLYING: replace the two <...> placeholders below with the names
+# >>> of your existing Azure ClusterSecretStores. Nothing here creates them.
+# >>> If you forget, the policy fails closed with a clear message rather than
+# >>> creating a PushSecret that points at a store called "<CONFIG_STORE_NAME>".
+#
+# FUNCTION SET: uses only functions present in go-template-utils v7.0.x (ACM
+# 2.13). Deduplication is done with dict/keys/sortAlpha because `uniq` is not
+# in that release's allowlist.
+# =============================================================================
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: ldap-export-hub-push
+  namespace: ldap-export
+  annotations:
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/categories: SC System and Communications Protection
+    policy.open-cluster-management.io/controls: SC-12 Cryptographic Key Establishment and Management
+    policy.open-cluster-management.io/description: >-
+      On the hub, creates the External Secrets Operator objects that pull each
+      selected managed cluster's LDAP export Secrets to the hub and push them
+      to Azure Key Vault.
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: ldap-export-hub-push
+        spec:
+          remediationAction: enforce
+          severity: high
+          # When a cluster leaves the Placement its objects stop being emitted
+          # and are removed, so its Key Vault entry stops being refreshed.
+          pruneObjectBehavior: DeleteIfCreated
+          evaluationInterval:
+            compliant: 2h
+            noncompliant: 45s
+          object-templates-raw: |
+            {{- /* This runs ON THE HUB, so every lookup below is a hub object
+                   and no {{hub ... hub}} delimiters are needed: one stage. */ -}}
+
+            {{- /* ================= SETTINGS -- EDIT THESE ================== */ -}}
+
+            {{- /* Names of your EXISTING Azure ClusterSecretStores. */ -}}
+            {{- $cfgStore := "<CONFIG_STORE_NAME>" -}}
+            {{- $caStore  := "<CA_STORE_NAME>" -}}
+
+            {{- /* Namespace of the cluster-proxy-addon-user Service.
+                   multicluster-engine on ACM; find it with:
+                     oc get svc -A | grep cluster-proxy-addon-user */ -}}
+            {{- $proxyNs := "multicluster-engine" -}}
+
+            {{- /* ESO's PushSecret controller does not watch its source Secret,
+                   so this value IS the rotation latency budget -- and there are
+                   two hops (pull, then push), so worst case is 2x this. */ -}}
+            {{- $refresh := "15m" -}}
+
+            {{- /* Must match the Placement name in policy-ldap-export.yaml. */ -}}
+            {{- $placement := "ldap-export-clusters" -}}
+            {{- $ns := "ldap-export" -}}
+
+            {{- /* ================= END SETTINGS ============================ */ -}}
+
+            {{- if hasPrefix "<" $cfgStore -}}
+              {{- fail "ldap-export: $cfgStore is still the placeholder. Set it to the name of your existing Azure ClusterSecretStore for the LDAP configuration vault (oc get clustersecretstore)." -}}
+            {{- end -}}
+            {{- if hasPrefix "<" $caStore -}}
+              {{- fail "ldap-export: $caStore is still the placeholder. Set it to the name of your existing Azure ClusterSecretStore for the CA vault (oc get clustersecretstore)." -}}
+            {{- end -}}
+
+            {{- /* ---- the cluster list, from the Placement's decisions ------- */ -}}
+            {{- $selector  := printf "cluster.open-cluster-management.io/placement=%s" $placement -}}
+            {{- $decisions := lookup "cluster.open-cluster-management.io/v1beta1" "PlacementDecision" $ns "" $selector -}}
+
+            {{- /* A dict is used purely to deduplicate: a Placement with many
+                   decision objects can list the same cluster more than once,
+                   and emitting duplicate objects would make the policy flap. */ -}}
+            {{- $seen := dict -}}
+            {{- range $pd := (default (list) $decisions.items) -}}
+              {{- range $d := (dig "status" "decisions" (list) $pd) -}}
+                {{- $name := trim (printf "%v" (default "" $d.clusterName)) -}}
+                {{- /* Skip the hub itself: its Secrets are already local, so
+                       there is no tunnel to pull them over. */ -}}
+                {{- if and $name (ne $name "local-cluster") -}}
+                  {{- $_ := set $seen $name "" -}}
+                {{- end -}}
+              {{- end -}}
+            {{- end -}}
+            {{- $clusters := sortAlpha (keys $seen) -}}
+
+            {{- /* Zero selected clusters is a legitimate steady state (nothing
+                   labelled brand_group=gms yet): render nothing, stay Compliant.
+
+                   Each iteration must BEGIN on a new line -- the closing
+                   "{{- end }}" of the inner loop consumes the preceding newline,
+                   so the lines below deliberately end in "}}" and not "-}}". */ -}}
+            {{- range $c := $clusters -}}
+            {{- $cfgName := printf "ldap-export-secret-%s" $c -}}
+            {{- $caName  := printf "ldap-export-ca-secret-%s" $c }}
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: authentication.open-cluster-management.io/v1beta1
+                kind: ManagedServiceAccount
+                metadata:
+                  name: ldap-export-reader
+                  namespace: {{ $c }}
+                spec:
+                  rotation:
+                    enabled: true
+                    validity: 720h
+
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: external-secrets.io/v1
+                kind: SecretStore
+                metadata:
+                  name: {{ $c }}-remote
+                  namespace: {{ $c }}
+                spec:
+                  provider:
+                    kubernetes:
+                      remoteNamespace: {{ $ns }}
+                      server:
+                        # cluster-proxy: the managed cluster's agent dials OUT to
+                        # the hub, so this needs no inbound firewall opening.
+                        url: https://cluster-proxy-addon-user.{{ $proxyNs }}.svc.cluster.local:9092/{{ $c }}
+                        caProvider:
+                          type: ConfigMap
+                          name: openshift-service-ca.crt
+                          key: service-ca.crt
+                          namespace: {{ $c }}
+                      auth:
+                        token:
+                          bearerToken:
+                            name: ldap-export-reader
+                            key: token
+                            namespace: {{ $c }}
+            {{- range $p := list (dict "name" $cfgName "src" "ldap-export-config" "key" "ldap-config.json") (dict "name" $caName "src" "ldap-export-ca" "key" "ca.crt") }}
+
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: external-secrets.io/v1
+                kind: ExternalSecret
+                metadata:
+                  name: {{ $p.name }}
+                  namespace: {{ $c }}
+                spec:
+                  refreshInterval: {{ $refresh }}
+                  secretStoreRef:
+                    name: {{ $c }}-remote
+                    kind: SecretStore
+                  target:
+                    name: {{ $p.name }}
+                    creationPolicy: Owner
+                  data:
+                    - secretKey: {{ $p.key }}
+                      remoteRef:
+                        # For the kubernetes provider, key is the remote Secret's
+                        # NAME and property is the key inside its data map.
+                        key: {{ $p.src }}
+                        property: {{ $p.key }}
+            {{- end }}
+            {{- range $p := list (dict "name" $cfgName "store" $cfgStore "key" "ldap-config.json" "ct" "application/json") (dict "name" $caName "store" $caStore "key" "ca.crt" "ct" "application/x-pem-file") }}
+
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: external-secrets.io/v1alpha1
+                kind: PushSecret
+                metadata:
+                  name: {{ $p.name }}
+                  namespace: {{ $c }}
+                spec:
+                  refreshInterval: {{ $refresh }}
+                  updatePolicy: Replace
+                  # Delete + Key Vault soft-delete would reserve the name and stop
+                  # a rebuilt cluster of the same name from ever publishing again.
+                  deletionPolicy: None
+                  secretStoreRefs:
+                    # Pre-existing store. This policy never creates one.
+                    - name: {{ $p.store }}
+                      kind: ClusterSecretStore
+                  selector:
+                    secret:
+                      name: {{ $p.name }}
+                  data:
+                    - match:
+                        secretKey: {{ $p.key }}
+                        remoteRef:
+                          remoteKey: {{ $p.name }}
+                      metadata:
+                        apiVersion: kubernetes.external-secrets.io/v1alpha1
+                        kind: PushSecretMetadata
+                        spec:
+                          contentType: {{ $p.ct }}
+            {{- end }}
+            {{- end }}
+
+---
+# This policy runs on the hub itself, not on the managed clusters.
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: ldap-export-hub
+  namespace: ldap-export
+spec:
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: local-cluster
+              operator: In
+              values:
+                - "true"
+
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: ldap-export-hub-push
+  namespace: ldap-export
+placementRef:
+  name: ldap-export-hub
+  apiGroup: cluster.open-cluster-management.io
+  kind: Placement
+subjects:
+  - name: ldap-export-hub-push
+    apiGroup: policy.open-cluster-management.io
+    kind: Policy
