@@ -267,6 +267,33 @@ Six objects per cluster, all removed again when the cluster leaves the Placement
 
 ---
 
+## Maintainer note: never write the hub delimiters literally
+
+Before replicating a policy, the governance-policy-propagator runs a
+hub-delimited template pass over the **raw text of the whole file**. It does
+this to every policy, including one that only ever runs on the hub.
+
+That pass does not know what a YAML comment is. If the opening and closing hub
+delimiters appear anywhere in the file — including inside a `{{- /* ... */ -}}`
+comment — it will try to execute whatever sits between them, and the policy
+fails to apply with something like:
+
+```
+template-error; failed to parse the template JSON string {...}: template: tmpl:62: unexpected <.> in operand
+```
+
+So describe them in prose ("the hub delimiters") rather than writing them out.
+The one legitimate use in this repo is real and intentional:
+
+```
+{{- $cluster := "{{hub .ManagedClusterName hub}}" -}}
+```
+
+in `policy-ldap-export.yaml`, which is how the cluster name is injected from the
+hub. `policy-ldap-hub-push.yaml` contains none at all, by design — it runs on
+the hub, so everything it reads is a local object and one template stage is
+enough.
+
 ## Maintainer note: the template function set
 
 Both policies are deliberately restricted to the template functions available in

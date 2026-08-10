@@ -72,7 +72,13 @@ spec:
             noncompliant: 45s
           object-templates-raw: |
             {{- /* This runs ON THE HUB, so every lookup below is a hub object
-                   and no {{hub ... hub}} delimiters are needed: one stage. */ -}}
+                   and no hub-side delimiters are needed: one stage, not two.
+
+                   Do NOT write the hub delimiters literally anywhere in this
+                   file -- not even inside a comment like this one. The
+                   governance-policy-propagator scans the raw text of every
+                   policy for them before replicating it, and will try to
+                   execute whatever sits between them. */ -}}
 
             {{- /* ================= SETTINGS -- EDIT THESE ================== */ -}}
 
