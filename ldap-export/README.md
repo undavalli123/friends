@@ -254,6 +254,7 @@ On each selected **managed cluster** (policy 1):
 | Object | Name |
 | --- | --- |
 | Namespace | `ldap-export` |
+| Role + RoleBinding | `ldap-export-reader` — lets the hub's ManagedServiceAccount token read exactly the two Secrets below, and nothing else |
 | Secret | `ldap-export/ldap-export-config` — key `ldap-config.json` |
 | Secret | `ldap-export/ldap-export-ca` — key `ca.crt` |
 
@@ -277,6 +278,7 @@ Six objects per cluster, all removed again when the cluster leaves the Placement
 | Policy 1 NonCompliant, template error names the object | A source object is missing, empty or malformed | `ldap-sync` on the spoke |
 | ExternalSecret never syncs, no token Secret exists | `managed-serviceaccount` addon not enabled | hub, namespace `<cluster>` |
 | ExternalSecret reports a connection error | cluster-proxy addon down, or `$proxyNs` wrong | hub, namespace `<cluster>` |
+| SecretStore `Ready=False`, `InvalidProviderConfig`, "unable to validate store" | The hub's token can authenticate but not read. Check the Role/RoleBinding policy 1 creates on the spoke | managed cluster, `ldap-export` |
 | PushSecret errors on the store reference | `azure-keyvault-gmis` missing, or lacks write access | hub |
 | Vault entry stale but everything reports healthy | Expected for up to 30m — two 15m refresh hops | — |
 | Policy 2 Compliant but renders nothing | No cluster carries `brand_group=gms` yet. Zero selected clusters is a legitimate steady state | `oc get placementdecision -n ldap-export` |

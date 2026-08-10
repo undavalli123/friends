@@ -307,6 +307,74 @@ spec:
                 data:
                   ca.crt: {{ $caPem | base64enc }}
 
+    # -----------------------------------------------------------------------
+    # 1c. Let the hub actually READ those two Secrets.
+    #
+    # The ManagedServiceAccount that policy 2 creates gives the hub a token on
+    # this cluster, but that ServiceAccount starts with NO permissions at all.
+    # Without the Role below the token authenticates and is then refused, and
+    # ESO reports the unhelpful:
+    #
+    #   Ready=False  reason: InvalidProviderConfig
+    #   message: unable to validate store
+    #
+    # Scoped to exactly the two Secrets by resourceNames -- the hub cannot read
+    # anything else in the namespace, or anything in any other namespace.
+    # -----------------------------------------------------------------------
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: ldap-export-reader-rbac
+        spec:
+          remediationAction: enforce
+          severity: high
+          pruneObjectBehavior: DeleteIfCreated
+          evaluationInterval:
+            compliant: 2h
+            noncompliant: 45s
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: ldap-export
+                  labels:
+                    app.kubernetes.io/name: ldap-export
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: Role
+                metadata:
+                  name: ldap-export-reader
+                  namespace: ldap-export
+                rules:
+                  - apiGroups: [""]
+                    resources: ["secrets"]
+                    resourceNames:
+                      - ldap-export-config
+                      - ldap-export-ca
+                    verbs: ["get", "list", "watch"]
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: RoleBinding
+                metadata:
+                  name: ldap-export-reader
+                  namespace: ldap-export
+                roleRef:
+                  apiGroup: rbac.authorization.k8s.io
+                  kind: Role
+                  name: ldap-export-reader
+                subjects:
+                  # The ServiceAccount the ManagedServiceAccount addon creates
+                  # on this cluster. Its name matches the ManagedServiceAccount
+                  # in policy 2; the namespace is the addon's own.
+                  - kind: ServiceAccount
+                    name: ldap-export-reader
+                    namespace: open-cluster-management-agent-addon
+
 ---
 # The cluster set this whole thing applies to. Policy 2 reads THIS Placement's
 # PlacementDecision to know which clusters to collect from, so the name below
