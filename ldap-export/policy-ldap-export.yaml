@@ -1,0 +1,290 @@
+---
+# =============================================================================
+# POLICY 1 of 2 -- render the LDAP export Secrets on each managed cluster.
+#
+# Runs on every ManagedCluster labelled brand_group=gms.
+#
+#   reads   ConfigMap  openshift-config/secondary-ldap-group-syncer  key sync.yaml
+#           Secret     openshift-config/secondary-ldap-secret        key bindPassword
+#           ConfigMap  openshift-config/secondary-ca-config-map      key ca.crt
+#
+#   writes  Secret     ldap-export/ldap-export-config   key ldap-config.json
+#           Secret     ldap-export/ldap-export-ca       key ca.crt
+#
+# The bind password never leaves the managed cluster here: these are
+# MANAGED-CLUSTER templates, resolved by config-policy-controller on the
+# cluster itself. Only the cluster NAME is injected from the hub.
+#
+# Policy 2 (policy-ldap-hub-push.yaml) pulls these two Secrets to the hub and
+# pushes them to Azure Key Vault.
+#
+# Config and CA are two separate ConfigurationPolicies on purpose: they fail
+# independently, so a broken CA never blocks a bind-password rotation and
+# vice versa.
+#
+# FUNCTION SET: uses only functions present in go-template-utils v7.0.x, the
+# version that ships with ACM 2.13. Notably it avoids first/last/kindIs/uniq/
+# trimPrefix/toString, which are NOT in that release's allowlist even though
+# they exist in sprig.
+# =============================================================================
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: ldap-export
+  namespace: ldap-export
+  annotations:
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/categories: SC System and Communications Protection
+    policy.open-cluster-management.io/controls: SC-12 Cryptographic Key Establishment and Management
+    policy.open-cluster-management.io/description: >-
+      Renders this managed cluster's LDAP connection profile and CA trust
+      bundle into two Secrets in the ldap-export namespace, for the hub to
+      collect and publish to Azure Key Vault.
+spec:
+  remediationAction: enforce
+  disabled: false
+  policy-templates:
+
+    # -----------------------------------------------------------------------
+    # 1a. LDAP connection profile -> Secret ldap-export/ldap-export-config
+    # -----------------------------------------------------------------------
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: ldap-export-config
+        spec:
+          remediationAction: enforce
+          severity: high
+          # Remove the Secret if the policy is removed or the cluster leaves
+          # the Placement, so the Key Vault entry stops being refreshed.
+          pruneObjectBehavior: DeleteIfCreated
+          # config-policy-controller watches every object a template reads, so
+          # edits to sync.yaml or the bind Secret re-render immediately. This
+          # interval is only the safety net.
+          evaluationInterval:
+            compliant: 2h
+            noncompliant: 45s
+          object-templates-raw: |
+            {{- /* Cluster name is the one value injected from the hub. */ -}}
+            {{- $cluster := "{{hub .ManagedClusterName hub}}" -}}
+            {{- $srcNs   := "openshift-config" -}}
+            {{- $dstNs   := "ldap-export" -}}
+
+            {{- /* Published to consumers as-is. Kept here rather than on a
+                   ManagedCluster label because label values may only contain
+                   [A-Za-z0-9._-] and an LDAP filter cannot legally be one. */ -}}
+            {{- $searchFilter := "(|(sAMAccountName={0})(cn={0})(userPrincipalName={0})(uid={0}))" -}}
+
+            {{- /* ---- 1. read + parse sync.yaml ------------------------------ */ -}}
+            {{- $syncRaw := fromConfigMap $srcNs "secondary-ldap-group-syncer" "sync.yaml" -}}
+            {{- if not (trim $syncRaw) -}}
+              {{- fail (printf "ldap-export: configmap %s/secondary-ldap-group-syncer has no non-empty sync.yaml key" $srcNs) -}}
+            {{- end -}}
+            {{- /* Malformed YAML makes fromYAML error, which makes this policy
+                   NonCompliant instead of publishing a partial secret. */ -}}
+            {{- $sync := fromYAML $syncRaw -}}
+            {{- if not (hasKey $sync "url") -}}
+              {{- fail "ldap-export: sync.yaml has no .url" -}}
+            {{- end -}}
+
+            {{- /* ---- 2. url -> scheme / host / port ------------------------- */ -}}
+            {{- $rawURL := trim (printf "%v" (get $sync "url")) -}}
+            {{- if not $rawURL -}}
+              {{- fail "ldap-export: sync.yaml .url is empty" -}}
+            {{- end -}}
+            {{- /* Require an explicit scheme. Defaulting a bare host to ldap://
+                   would publish ssl:false for a server that is actually LDAPS,
+                   and every consumer would believe it. Ambiguity fails here. */ -}}
+            {{- if not (contains "://" $rawURL) -}}
+              {{- fail (printf "ldap-export: url %q has no scheme. Use ldap:// or ldaps:// explicitly." $rawURL) -}}
+            {{- end -}}
+            {{- $parts    := splitn "://" 2 $rawURL -}}
+            {{- $scheme   := $parts._0 -}}
+            {{- $hostport := $parts._1 -}}
+            {{- if and (ne $scheme "ldap") (ne $scheme "ldaps") -}}
+              {{- fail (printf "ldap-export: url %q uses unsupported scheme %q, expected ldap:// or ldaps://" $rawURL $scheme) -}}
+            {{- end -}}
+            {{- /* Drop any /baseDN?attrs?scope suffix pasted onto the url. */ -}}
+            {{- $hostport = (splitn "/" 2 $hostport)._0 -}}
+            {{- /* Refuse IPv6 literals rather than mis-parse them: splitting an
+                   address like [2001:db8::1]:636 on ":" would silently yield a
+                   wrong host and a wrong port. Fail loudly instead. */ -}}
+            {{- if hasPrefix "[" $hostport -}}
+              {{- fail (printf "ldap-export: url %q is an IPv6 literal, which this policy does not parse. Use a hostname." $rawURL) -}}
+            {{- end -}}
+            {{- $host := $hostport -}}
+            {{- $port := ternary "636" "389" (eq $scheme "ldaps") -}}
+            {{- if contains ":" $hostport -}}
+              {{- $hp := splitn ":" 2 $hostport -}}
+              {{- $host = $hp._0 -}}
+              {{- $port = $hp._1 -}}
+            {{- end -}}
+            {{- if not $host -}}
+              {{- fail (printf "ldap-export: could not derive a host from url %q" $rawURL) -}}
+            {{- end -}}
+            {{- if not (regexMatch "^[0-9]{1,5}$" $port) -}}
+              {{- fail (printf "ldap-export: url %q yielded a non-numeric port %q" $rawURL $port) -}}
+            {{- end -}}
+            {{- if or (lt (atoi $port) 1) (gt (atoi $port) 65535) -}}
+              {{- fail (printf "ldap-export: url %q yielded an out-of-range port %q" $rawURL $port) -}}
+            {{- end -}}
+
+            {{- /* LDAPSyncConfig: insecure=false on an ldap:// url means StartTLS. */ -}}
+            {{- $insecure := false -}}
+            {{- if hasKey $sync "insecure" -}}
+              {{- $insecure = get $sync "insecure" -}}
+            {{- end -}}
+            {{- $ssl      := eq $scheme "ldaps" -}}
+            {{- $startTls := and (eq $scheme "ldap") (not $insecure) -}}
+
+            {{- /* ---- 3. bindDN ---------------------------------------------- */ -}}
+            {{- if not (hasKey $sync "bindDN") -}}
+              {{- fail "ldap-export: sync.yaml has no .bindDN" -}}
+            {{- end -}}
+            {{- $bindDn := trim (printf "%v" (get $sync "bindDN")) -}}
+            {{- if not $bindDn -}}
+              {{- fail "ldap-export: sync.yaml .bindDN is empty" -}}
+            {{- end -}}
+
+            {{- /* ---- 4. searchBase ------------------------------------------ */ -}}
+            {{- /* The base DN sits under whichever schema stanza is in use, so
+                   try each rather than assuming augmentedActiveDirectory. */ -}}
+            {{- $searchBase := "" -}}
+            {{- range $stanza := list "augmentedActiveDirectory" "activeDirectory" "rfc2307" -}}
+              {{- if not $searchBase -}}
+                {{- if hasKey $sync $stanza -}}
+                  {{- $s := get $sync $stanza -}}
+                  {{- if hasKey $s "usersQuery" -}}
+                    {{- $searchBase = dig "usersQuery" "baseDN" "" $s -}}
+                  {{- end -}}
+                  {{- if not $searchBase -}}
+                    {{- $searchBase = dig "groupsQuery" "baseDN" "" $s -}}
+                  {{- end -}}
+                {{- end -}}
+              {{- end -}}
+            {{- end -}}
+            {{- $searchBase = trim (printf "%v" $searchBase) -}}
+            {{- if not $searchBase -}}
+              {{- fail "ldap-export: no baseDN found under augmentedActiveDirectory/activeDirectory/rfc2307 usersQuery or groupsQuery in sync.yaml" -}}
+            {{- end -}}
+
+            {{- /* ---- 5. bind credentials ------------------------------------ */ -}}
+            {{- /* fromSecret returns the value exactly as stored in .data, i.e.
+                   still base64-encoded, so decode it here. */ -}}
+            {{- $bindPw := base64dec (fromSecret $srcNs "secondary-ldap-secret" "bindPassword") -}}
+            {{- if not $bindPw -}}
+              {{- fail (printf "ldap-export: secret %s/secondary-ldap-secret has an empty or missing bindPassword key" $srcNs) -}}
+            {{- end -}}
+
+            {{- /* ---- 6. render ---------------------------------------------- */ -}}
+            {{- /* The Key Vault entry IS this JSON document. Built here rather
+                   than in the PushSecret so the quoting happens in one engine:
+                   mustToJSON escapes a password containing " or \, and port
+                   stays an int while ssl/startTls stay real booleans. */ -}}
+            {{- $cfg := dict
+                  "friendlyName"    $cluster
+                  "url"             $host
+                  "port"            (atoi $port)
+                  "ssl"             $ssl
+                  "startTls"        $startTls
+                  "bindDn"          $bindDn
+                  "bindCredentials" $bindPw
+                  "searchBase"      $searchBase
+                  "searchFilter"    $searchFilter -}}
+            - complianceType: mustonlyhave
+              # Keep the secret value out of the policy status / diff output.
+              recordDiff: None
+              objectDefinition:
+                apiVersion: v1
+                kind: Secret
+                type: Opaque
+                metadata:
+                  name: ldap-export-config
+                  namespace: {{ $dstNs }}
+                  labels:
+                    app.kubernetes.io/name: ldap-export
+                    ldap-export.io/cluster: {{ $cluster | quote }}
+                    ldap-export.io/kind: config
+                data:
+                  ldap-config.json: {{ $cfg | mustToJSON | base64enc }}
+
+    # -----------------------------------------------------------------------
+    # 1b. CA trust bundle -> Secret ldap-export/ldap-export-ca
+    # -----------------------------------------------------------------------
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: ldap-export-ca
+        spec:
+          remediationAction: enforce
+          severity: high
+          pruneObjectBehavior: DeleteIfCreated
+          evaluationInterval:
+            compliant: 2h
+            noncompliant: 45s
+          object-templates-raw: |
+            {{- $cluster := "{{hub .ManagedClusterName hub}}" -}}
+            {{- $srcNs   := "openshift-config" -}}
+            {{- $dstNs   := "ldap-export" -}}
+
+            {{- $caPem := fromConfigMap $srcNs "secondary-ca-config-map" "ca.crt" -}}
+            {{- if not (trim $caPem) -}}
+              {{- fail (printf "ldap-export: configmap %s/secondary-ca-config-map has no non-empty ca.crt key" $srcNs) -}}
+            {{- end -}}
+            {{- /* Cheapest check that this is a PEM bundle and not, say, an
+                   HTML error page or a DER blob written to the wrong key. */ -}}
+            {{- if not (contains "-----BEGIN CERTIFICATE-----" $caPem) -}}
+              {{- fail (printf "ldap-export: configmap %s/secondary-ca-config-map ca.crt does not contain a PEM CERTIFICATE block" $srcNs) -}}
+            {{- end -}}
+
+            - complianceType: mustonlyhave
+              recordDiff: None
+              objectDefinition:
+                apiVersion: v1
+                kind: Secret
+                type: Opaque
+                metadata:
+                  name: ldap-export-ca
+                  namespace: {{ $dstNs }}
+                  labels:
+                    app.kubernetes.io/name: ldap-export
+                    ldap-export.io/cluster: {{ $cluster | quote }}
+                    ldap-export.io/kind: ca
+                data:
+                  ca.crt: {{ $caPem | base64enc }}
+
+---
+# The cluster set this whole thing applies to. Policy 2 reads THIS Placement's
+# PlacementDecision to know which clusters to collect from, so the name below
+# must match $placement in policy-ldap-hub-push.yaml.
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: ldap-export-clusters
+  namespace: ldap-export
+spec:
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: brand_group
+              operator: In
+              values:
+                - gms
+
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: ldap-export
+  namespace: ldap-export
+placementRef:
+  name: ldap-export-clusters
+  apiGroup: cluster.open-cluster-management.io
+  kind: Placement
+subjects:
+  - name: ldap-export
+    apiGroup: policy.open-cluster-management.io
+    kind: Policy
