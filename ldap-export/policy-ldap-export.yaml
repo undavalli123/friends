@@ -192,6 +192,18 @@ spec:
                   "bindCredentials" $bindPw
                   "searchBase"      $searchBase
                   "searchFilter"    $searchFilter -}}
+            {{- /* The destination namespace will not exist on a cluster that has
+                   never run this policy, and a Secret cannot be created into a
+                   namespace that is absent. Both ConfigurationPolicies in this
+                   file ensure it, so neither depends on the other having run. */ -}}
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: {{ $dstNs }}
+                  labels:
+                    app.kubernetes.io/name: ldap-export
             - complianceType: mustonlyhave
               # Keep the secret value out of the policy status / diff output.
               recordDiff: None
@@ -239,6 +251,16 @@ spec:
               {{- fail (printf "ldap-export: configmap %s/secondary-ca-config-map ca.crt does not contain a PEM CERTIFICATE block" $srcNs) -}}
             {{- end -}}
 
+            {{- /* Ensured here too, so this policy does not depend on the
+                   config policy above having run first. */ -}}
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: {{ $dstNs }}
+                  labels:
+                    app.kubernetes.io/name: ldap-export
             - complianceType: mustonlyhave
               recordDiff: None
               objectDefinition:
