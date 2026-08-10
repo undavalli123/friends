@@ -212,10 +212,14 @@ Re-syncs are cheap: both sides read the current value first and skip the write
 when nothing changed, so a short interval does not create Key Vault versions or
 extra write cost.
 
-Policy 1 is different — the config-policy-controller establishes dynamic watches
-on every object a template reads, so an edit to `sync.yaml` or the bind Secret
-re-renders almost immediately. The `evaluationInterval` in the file is only a
-safety net.
+The policies themselves are different. Neither sets `evaluationInterval`, so
+both use its default of `watch`: the config-policy-controller watches the
+objects it enforces and reacts to a change or a deletion straight away. Delete a
+PushSecret and it comes back; edit `sync.yaml` and the Secret re-renders.
+
+Do not set `evaluationInterval` unless you mean it. Any value replaces the watch
+with polling, and a deleted object then stays deleted until the next poll —
+which is easy to mistake for the policy not working.
 
 ---
 

@@ -85,9 +85,10 @@ spec:
           # When a cluster leaves the Placement its objects stop being emitted
           # and are removed, so its Key Vault entry stops being refreshed.
           pruneObjectBehavior: DeleteIfCreated
-          evaluationInterval:
-            compliant: 2h
-            noncompliant: 45s
+          # No evaluationInterval here on purpose. Its default is `watch`,
+          # which reacts to a change or deletion of an enforced object
+          # immediately. Setting an interval REPLACES that watch with polling,
+          # so a deleted object would not be restored until the next poll.
           object-templates-raw: |
             {{- /* This runs ON THE HUB, so every lookup below is a hub object
                    and no hub-side delimiters are needed: one stage, not two.
