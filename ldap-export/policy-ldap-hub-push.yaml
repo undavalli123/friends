@@ -198,16 +198,23 @@ spec:
                         # the hub, so this needs no inbound firewall opening.
                         url: https://cluster-proxy-addon-user.{{ $proxyNs }}.svc.cluster.local:9092/{{ $c }}
                         caProvider:
+                          # No namespace field here. The ESO webhook rejects a
+                          # namespaced SecretStore that sets caProvider.namespace
+                          # ("Can only be defined when used in a
+                          # ClusterSecretStore"), and it is unnecessary anyway:
+                          # this ConfigMap is in the SecretStore's own namespace,
+                          # which is the default.
                           type: ConfigMap
                           name: openshift-service-ca.crt
                           key: service-ca.crt
-                          namespace: {{ $c }}
                       auth:
                         token:
                           bearerToken:
+                            # Likewise no namespace: it is ignored on a
+                            # namespaced SecretStore, and the token Secret is
+                            # already in this namespace.
                             name: ldap-export-reader
                             key: token
-                            namespace: {{ $c }}
             {{- range $p := list (dict "name" $cfgName "src" "ldap-export-config" "key" "ldap-config.json") (dict "name" $caName "src" "ldap-export-ca" "key" "ca.crt") }}
 
             - complianceType: musthave
