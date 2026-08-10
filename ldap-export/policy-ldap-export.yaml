@@ -4,9 +4,9 @@
 #
 # Runs on every ManagedCluster labelled brand_group=gms.
 #
-#   reads   ConfigMap  openshift-config/secondary-ldap-group-syncer  key sync.yaml
-#           Secret     openshift-config/secondary-ldap-secret        key bindPassword
-#           ConfigMap  openshift-config/secondary-ca-config-map      key ca.crt
+#   reads   ConfigMap  ldap-sync/secondary-ldap-group-syncer  key sync.yaml
+#           Secret     ldap-sync/secondary-ldap-secret        key bindPassword
+#           ConfigMap  ldap-sync/secondary-ca-config-map      key ca.crt
 #
 #   writes  Secret     ldap-export/ldap-export-config   key ldap-config.json
 #           Secret     ldap-export/ldap-export-ca       key ca.crt
@@ -68,7 +68,7 @@ spec:
           object-templates-raw: |
             {{- /* Cluster name is the one value injected from the hub. */ -}}
             {{- $cluster := "{{hub .ManagedClusterName hub}}" -}}
-            {{- $srcNs   := "openshift-config" -}}
+            {{- $srcNs   := "ldap-sync" -}}
             {{- $dstNs   := "ldap-export" -}}
 
             {{- /* Published to consumers as-is. Kept here rather than on a
@@ -226,7 +226,7 @@ spec:
             noncompliant: 45s
           object-templates-raw: |
             {{- $cluster := "{{hub .ManagedClusterName hub}}" -}}
-            {{- $srcNs   := "openshift-config" -}}
+            {{- $srcNs   := "ldap-sync" -}}
             {{- $dstNs   := "ldap-export" -}}
 
             {{- $caPem := fromConfigMap $srcNs "secondary-ca-config-map" "ca.crt" -}}
