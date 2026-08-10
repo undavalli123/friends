@@ -11,6 +11,24 @@ metadata:
     app.kubernetes.io/name: ldap-export
 
 ---
+# A Placement can only select clusters from ManagedClusterSets that are BOUND
+# to its namespace. Without this binding both Placements select nothing, the
+# fan-out renders zero objects, and the policy reports Compliant while creating
+# nothing at all.
+#
+# "global" is the built-in ManagedClusterSet containing every cluster; the
+# Placement's brand_group=gms predicate is what actually narrows it. If your
+# clusters live in a different set, change both fields to that set's name
+# (metadata.name must equal spec.clusterSet).
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSetBinding
+metadata:
+  name: global
+  namespace: ldap-export
+spec:
+  clusterSet: global
+
+---
 # =============================================================================
 # POLICY 2 of 2 -- collect each cluster's Secrets onto the hub and push them
 #                  to Azure Key Vault.

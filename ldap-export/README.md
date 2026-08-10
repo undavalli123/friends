@@ -264,6 +264,8 @@ Six objects per cluster, all removed again when the cluster leaves the Placement
 | PushSecret errors on the store reference | `azure-keyvault-gmis` missing, or lacks write access | hub |
 | Vault entry stale but everything reports healthy | Expected for up to 30m — two 15m refresh hops | — |
 | Policy 2 Compliant but renders nothing | No cluster carries `brand_group=gms` yet. Zero selected clusters is a legitimate steady state | `oc get placementdecision -n ldap-export` |
+| Clusters are labelled but no PlacementDecision appears | No `ManagedClusterSetBinding` in `ldap-export`, or it binds a set your clusters are not in | `oc get managedclustersetbinding -n ldap-export`, `oc get managedclusterset` |
+| Nothing happens at all, both policies Compliant | The hub is not self-managed, so policy 2 has no cluster to run on | `oc get managedcluster local-cluster` |
 
 ---
 
