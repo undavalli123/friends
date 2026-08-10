@@ -106,9 +106,10 @@ in ACM 2.13. On 2.12 or earlier this cannot be built as a pure policy.
 
 ## Install
 
-Both files are applied to the **hub**. Each one declares the `ldap-export`
-namespace as its first document, so either can be applied on its own and in
-either order — there is nothing to create beforehand.
+Both files are applied to the **hub**. Each one declares the `rhacm-policies`
+namespace and a `ManagedClusterSetBinding` as its first documents, so either can
+be applied on its own and in either order — there is nothing to create
+beforehand.
 
 ```sh
 oc apply -f policy-ldap-export.yaml     # managed-cluster side
@@ -159,6 +160,8 @@ The `Placement` at the bottom of the file selects `brand_group=gms`.
 | `$proxyNs` | `multicluster-engine` | Namespace of the `cluster-proxy-addon-user` Service. Find it with `oc get svc -A \| grep cluster-proxy-addon-user` |
 | `$refresh` | `15m` | Applies to both hops — see *Rotation latency* below |
 | `$placement` | `ldap-export-clusters` | Must match the Placement name in `policy-ldap-export.yaml` |
+| `$policyNs` | `rhacm-policies` | **Hub** namespace holding the policies, and therefore the PlacementDecisions this looks up |
+| `$exportNs` | `ldap-export` | **Managed-cluster** namespace the Secrets were written into. Must equal `$dstNs` in policy 1 |
 
 Both entries go to the same store, so one Azure identity reads and writes both
 the CA and the bind password; there is no separation between them. Splitting them
