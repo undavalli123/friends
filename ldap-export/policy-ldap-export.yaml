@@ -1,4 +1,16 @@
 ---
+# The hub namespace this Policy, Placement and PlacementBinding live in.
+# Declared here so `oc apply -f` (or a GitOps sync) of this one file is
+# self-sufficient. Harmless to apply twice -- the other policy file declares
+# it too, so neither file depends on the other being applied first.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ldap-export
+  labels:
+    app.kubernetes.io/name: ldap-export
+
+---
 # =============================================================================
 # POLICY 1 of 2 -- render the LDAP export Secrets on each managed cluster.
 #

@@ -69,7 +69,6 @@ here because the spokes have no Azure egress.
 
 On the **hub**:
 
-- Namespace `ldap-export` exists (the policies live in it).
 - External Secrets Operator is installed.
 - A `ClusterSecretStore` named `azure-keyvault-gmis` exists and can write to the
   vault. **Nothing here creates it.**
@@ -94,10 +93,19 @@ in ACM 2.13. On 2.12 or earlier this cannot be built as a pure policy.
 
 ## Install
 
+Both files are applied to the **hub**. Each one declares the `ldap-export`
+namespace as its first document, so either can be applied on its own and in
+either order — there is nothing to create beforehand.
+
 ```sh
 oc apply -f policy-ldap-export.yaml     # managed-cluster side
 oc apply -f policy-ldap-hub-push.yaml   # hub side
 ```
+
+Under Argo CD / OpenShift GitOps this works unchanged: Namespace sorts first in
+Argo's kind ordering. If you would rather Argo own the namespace, delete the
+Namespace document from both files and set `CreateNamespace=true` on the
+Application instead.
 
 Onboard a cluster with one label — policy 2 reads the Placement's decisions, so
 this is all that is needed end to end:
