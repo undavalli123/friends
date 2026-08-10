@@ -14,10 +14,14 @@
 #
 # Managed clusters never talk to Azure. Only the hub does.
 #
-# >>> BEFORE APPLYING: replace the two <...> placeholders below with the names
-# >>> of your existing Azure ClusterSecretStores. Nothing here creates them.
-# >>> If you forget, the policy fails closed with a clear message rather than
-# >>> creating a PushSecret that points at a store called "<CONFIG_STORE_NAME>".
+# ESO runs on the HUB ONLY. It is NOT installed on the managed clusters: the
+# SecretStore below lives on the hub and reaches each spoke's API server
+# through cluster-proxy, so the spokes only run policy 1, which writes a
+# plain Secret. What the spokes do need is the managed-serviceaccount and
+# cluster-proxy ACM addons enabled.
+#
+# Both Key Vault entries go to the existing ClusterSecretStore named
+# azure-keyvault-gmis (set as $akvStore below). Nothing here creates it.
 #
 # FUNCTION SET: uses only functions present in go-template-utils v7.0.x (ACM
 # 2.13). Deduplication is done with dict/keys/sortAlpha because `uniq` is not
@@ -60,9 +64,11 @@ spec:
 
             {{- /* ================= SETTINGS -- EDIT THESE ================== */ -}}
 
-            {{- /* Names of your EXISTING Azure ClusterSecretStores. */ -}}
-            {{- $cfgStore := "<CONFIG_STORE_NAME>" -}}
-            {{- $caStore  := "<CA_STORE_NAME>" -}}
+            {{- /* Your EXISTING Azure ClusterSecretStore. One store serves both
+                   entries; this policy never creates it. Note that one store
+                   means one Azure identity reads and writes both the CA and the
+                   bind credentials -- there is no separation between them. */ -}}
+            {{- $akvStore := "azure-keyvault-gmis" -}}
 
             {{- /* Namespace of the cluster-proxy-addon-user Service.
                    multicluster-engine on ACM; find it with:
@@ -80,11 +86,12 @@ spec:
 
             {{- /* ================= END SETTINGS ============================ */ -}}
 
-            {{- if hasPrefix "<" $cfgStore -}}
-              {{- fail "ldap-export: $cfgStore is still the placeholder. Set it to the name of your existing Azure ClusterSecretStore for the LDAP configuration vault (oc get clustersecretstore)." -}}
-            {{- end -}}
-            {{- if hasPrefix "<" $caStore -}}
-              {{- fail "ldap-export: $caStore is still the placeholder. Set it to the name of your existing Azure ClusterSecretStore for the CA vault (oc get clustersecretstore)." -}}
+            {{- /* Guard against $akvStore being blanked or turned back into a
+                   placeholder by a later edit: without this a PushSecret would
+                   be created pointing at a store that does not exist, and the
+                   Key Vault entry would silently stop being refreshed. */ -}}
+            {{- if or (not (trim $akvStore)) (hasPrefix "<" $akvStore) -}}
+              {{- fail "ldap-export: $akvStore is empty or still a placeholder. Set it to the name of your existing Azure ClusterSecretStore (oc get clustersecretstore)." -}}
             {{- end -}}
 
             {{- /* ---- the cluster list, from the Placement's decisions ------- */ -}}
@@ -179,7 +186,7 @@ spec:
                         key: {{ $p.src }}
                         property: {{ $p.key }}
             {{- end }}
-            {{- range $p := list (dict "name" $cfgName "store" $cfgStore "key" "ldap-config.json" "ct" "application/json") (dict "name" $caName "store" $caStore "key" "ca.crt" "ct" "application/x-pem-file") }}
+            {{- range $p := list (dict "name" $cfgName "store" $akvStore "key" "ldap-config.json" "ct" "application/json") (dict "name" $caName "store" $akvStore "key" "ca.crt" "ct" "application/x-pem-file") }}
 
             - complianceType: musthave
               objectDefinition:
