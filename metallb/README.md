@@ -90,6 +90,34 @@ Both policies are `remediationAction: enforce`, so ACM creates and continually
 corrects these objects. Switch to `inform` for a dry run — the policies will
 then report compliance without changing anything.
 
+## If the operator already failed with "OwnNamespace InstallModeType not supported"
+
+The MetalLB CSV supports **only** `AllNamespaces`; `OwnNamespace`,
+`SingleNamespace` and `MultiNamespace` are all `false`. An OperatorGroup whose
+`targetNamespaces` lists its own namespace is OwnNamespace mode, so OLM fails
+the operator. The OperatorGroup here therefore has an empty `spec`.
+
+A cluster that already installed with the wrong OperatorGroup will not fix
+itself: `musthave` adds and corrects the fields it names, but it does not
+remove a `targetNamespaces` that is already there. Clear it once, then let the
+policy recreate it:
+
+```sh
+oc delete operatorgroup metallb-operator -n metallb-system
+oc delete csv -n metallb-system -l operators.coreos.com/metallb-operator.metallb-system
+```
+
+The policy recreates the OperatorGroup in AllNamespaces mode on its next
+evaluation and OLM reinstalls the operator. Watch it recover with:
+
+```sh
+oc get csv -n metallb-system -w
+```
+
+Until it does, `policy-metallb-operator` stays NonCompliant on its
+`metallb-operator-status` check — that gate exists precisely so a failed
+operator install cannot be reported as healthy, and it correctly catches this.
+
 ## Validation performed
 
 These manifests were checked offline before being committed:

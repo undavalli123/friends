@@ -34,6 +34,15 @@ spec:
                 kind: Namespace
                 metadata:
                   name: metallb-system
+            # The MetalLB CSV declares AllNamespaces as its ONLY supported
+            # install mode -- OwnNamespace, SingleNamespace and MultiNamespace
+            # are all false. An OperatorGroup whose targetNamespaces lists its
+            # own namespace IS OwnNamespace mode, and OLM then fails the
+            # operator with:
+            #   OwnNamespace InstallModeType not supported,
+            #   cannot configure to watch own namespace
+            # AllNamespaces is expressed as an OperatorGroup with an empty spec:
+            # no targetNamespaces and no selector. Do not add one back.
             - complianceType: musthave
               objectDefinition:
                 apiVersion: operators.coreos.com/v1
@@ -41,9 +50,7 @@ spec:
                 metadata:
                   name: metallb-operator
                   namespace: metallb-system
-                spec:
-                  targetNamespaces:
-                    - metallb-system
+                spec: {}
             - complianceType: musthave
               objectDefinition:
                 apiVersion: operators.coreos.com/v1alpha1
