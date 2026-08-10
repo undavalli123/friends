@@ -6,7 +6,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: ldap-export
+  name: rhacm-policies
   labels:
     app.kubernetes.io/name: ldap-export
 
@@ -24,7 +24,7 @@ apiVersion: cluster.open-cluster-management.io/v1beta2
 kind: ManagedClusterSetBinding
 metadata:
   name: global
-  namespace: ldap-export
+  namespace: rhacm-policies
 spec:
   clusterSet: global
 
@@ -61,7 +61,7 @@ apiVersion: policy.open-cluster-management.io/v1
 kind: Policy
 metadata:
   name: ldap-export
-  namespace: ldap-export
+  namespace: rhacm-policies
   annotations:
     policy.open-cluster-management.io/standards: NIST SP 800-53
     policy.open-cluster-management.io/categories: SC System and Communications Protection
@@ -315,7 +315,7 @@ apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Placement
 metadata:
   name: ldap-export-clusters
-  namespace: ldap-export
+  namespace: rhacm-policies
 spec:
   predicates:
     - requiredClusterSelector:
@@ -331,7 +331,7 @@ apiVersion: policy.open-cluster-management.io/v1
 kind: PlacementBinding
 metadata:
   name: ldap-export
-  namespace: ldap-export
+  namespace: rhacm-policies
 placementRef:
   name: ldap-export-clusters
   apiGroup: cluster.open-cluster-management.io

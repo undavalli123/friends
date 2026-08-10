@@ -67,6 +67,19 @@ here because the spokes have no Azure egress.
 
 ## Prerequisites
 
+### Two namespaces, do not confuse them
+
+| Namespace | Where | Holds |
+| --- | --- | --- |
+| `rhacm-policies` | hub | the Policies, Placements, PlacementBindings — and therefore the PlacementDecisions policy 2 looks up |
+| `ldap-export` | managed cluster | the two Secrets policy 1 renders, and what the hub's SecretStore reads (`remoteNamespace`) |
+
+They are unrelated. If you deploy the policies somewhere other than
+`rhacm-policies`, change `$policyNs` in `policy-ldap-hub-push.yaml` to match —
+**not** `$exportNs`. Getting this wrong is silent: the PlacementDecision lookup
+returns nothing, the fan-out renders zero objects, and the policy reports
+Compliant having created nothing.
+
 On the **hub**:
 
 - External Secrets Operator is installed.
